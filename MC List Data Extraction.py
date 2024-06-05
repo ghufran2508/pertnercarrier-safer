@@ -5,14 +5,12 @@ import os
 import re
 import json
 import os
+import multiprocessing
+from playsound import playsound
 
-# TODO: for entered company name.
-# check if file exist and data is complete in all sheets.
-# if found Error 403 in last row of sheet, continue it from there.
-# else, 
-#   1. get the last sheet name from workbook
-#   2. align it with all __get_all_cities__
-#   3. continue it from the very next city name/url
+def play_sound_loop(sound_file):
+    while True:
+        playsound(sound_file)
 
 class WebScrapper:
     def __init__(self):
@@ -38,7 +36,7 @@ class WebScrapper:
             self.__workbook__.close()
     
     # check if a partnercarries contains company input by user. 
-    def __check_if_company_exist__(self, company_name):
+    def __check_if_company_exist__(self, state_name):
         response = self.session.get(self.__PARTNERCARRIES_URL__, headers=self.__HEADERS__)
 
         if response.status_code == 200:
@@ -49,8 +47,8 @@ class WebScrapper:
             for companies in links:
                 # links contain data in format "Georgia Trucking Companies (1234)"
                 # this line will only check company name in "georgia trucking companies"
-                if company_name in re.sub('([0-9])', '', companies.text).lower():
-                    print(f"Company {company_name} found in partnercarries. URL {companies.get('href')}")
+                if state_name in re.sub('([0-9])', '', companies.text).lower():
+                    print(f"Company {state_name} found in partnercarries. URL {companies.get('href')}")
                     return companies.get('href')
 
         else:
@@ -149,7 +147,7 @@ class WebScrapper:
                             print("No Data Found")
                             return None
 
-                        company_name = ' '.join([word.capitalize() for word in target_trs[6].find('td', class_='queryfield').text.strip().split()])
+                        state_name = ' '.join([word.capitalize() for word in target_trs[6].find('td', class_='queryfield').text.strip().split()])
                         address = target_trs[8].find('td', class_='queryfield').text.strip()
                         address_parts = address.split('\n')
                         if len(address_parts) >= 2:
@@ -195,12 +193,15 @@ class WebScrapper:
                             return None
                         
                         # Check Cargo Carried section
-                        tables = soup.find_all('table')
-                        cargo_carried = tables[16]
-                        tow_row = cargo_carried.find_all('tr')[5]
-                        if tow_row.find('td', class_='queryfield').text.strip() == "X":
-                            print(f"Carrier is marked with Drive/Tow away in Cargo Carried section with an X for MC number {mcn}")
-                            return None
+                        tables = soup.find('table', summary="Cargo Carried")
+                        flags_index = [7, 15, 18, 19, 22, 31]
+                        trs_cargo_carried = tables.find_all('tr')
+
+                        for flags in flags_index:
+                            row_cargo_carried = trs_cargo_carried[flags]
+                            if row_cargo_carried.find('td', class_='queryfield').text.strip() == "X":
+                                print(f"Carrier is marked with {row_cargo_carried} in Cargo Carried section with an X for MC number {mcn}")
+                                return None
 
                         email = 'NOT FOUND'
                         url2 = f'https://ai.fmcsa.dot.gov/SMS/Carrier/{usdot}/CarrierRegistration.aspx'
@@ -215,9 +216,12 @@ class WebScrapper:
                                 if len(spans) > 7:
                                     email = spans[6].text.strip().lower()
 
-                        return usdot, company_name, address, phone, email, number_of_trucks, authority_status
+                        return usdot, state_name, address, phone, email, number_of_trucks, authority_status
         elif response.status_code == 403:
-            self.__append_data_in_sheet__([mcn, "Error: 403 Forbidden"])
+            p = multiprocessing.Process(target=play_sound_loop, args=("ah-shit-here-we-go-again.mp3",))
+            p.start()
+            input("press ENTER to stop playback")
+            p.terminate()
             exit(0)
         else:
             print("Error: Failed to retrieve data")
@@ -225,11 +229,12 @@ class WebScrapper:
         return None
 
     # below are the functions related to workbook/worksheet
-    def __create_file_for_company_name__(self, company_name):
-        self.__file_name__ = f"{company_name}.xlsx"
+    def __create_file_for_state_name__(self, state_name):
+        self.__file_name__ = f"{state_name}.xlsx"
         if os.path.isfile(self.__file_name__):
             self.__workbook__ = openpyxl.load_workbook(filename=self.__file_name__)
             self.__lastSheet__ = self.__workbook__.worksheets[-1].title
+            self.__worksheet__ = self.__workbook__.worksheets[-1]
         else:
             self.__workbook__ = openpyxl.Workbook()
             self.__workbook__.save(self.__file_name__)
@@ -263,15 +268,15 @@ class WebScrapper:
         self.__workbook__.save(self.__file_name__)
 
     def run(self):
-        # company_name = input("Enter the company name: ").lower()
-        company_name="georgia"
-        company_url = self.__check_if_company_exist__(company_name)
+        state_name = input("Enter the state name: ").lower()
+        # state_name="georgia"
+        state_url = self.__check_if_company_exist__(state_name)
 
-        if company_url is None:
-            print(f"Company with name ${company_name} not found")
+        if state_url is None:
+            print(f"Company with name ${state_name} not found")
         else:
-            self.__create_file_for_company_name__(company_name)
-            list_of_all_cities_url = self.__get_all_cities__(company_url)
+            self.__create_file_for_state_name__(state_name)
+            list_of_all_cities_url = self.__get_all_cities__(state_url)
 
             to_skip = True if self.__lastSheet__ != None else False
 
@@ -302,9 +307,9 @@ class WebScrapper:
                         print(f"Starting request for {mc_number}.")
                         safer_data = self.__get_safer_data__(mcn=mc_number)
                         if safer_data:
-                            (usdot, company_name, address, phone, email, number_of_trucks, authority_status) = safer_data
+                            (usdot, state_name, address, phone, email, number_of_trucks, authority_status) = safer_data
                             # append data in sheet
-                            self.__append_data_in_sheet__(data=[mc_number, usdot, company_name, address, phone, email, number_of_trucks, authority_status])
+                            self.__append_data_in_sheet__(data=[mc_number, usdot, state_name, address, phone, email, number_of_trucks, authority_status])
 
                         print(f"Request for {mc_number} completed.")
 
